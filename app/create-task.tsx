@@ -19,10 +19,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import MapView, { Marker, Polyline, UrlTile, PROVIDER_DEFAULT } from 'react-native-maps';
 import polyline from '@mapbox/polyline';
+import * as Location from 'expo-location';
 
 LogBox.ignoreLogs(['VirtualizedLists should never be nested']);
 
-const API_URL = 'http://192.168.49.90:8000/api';
+const API_URL = 'http://172.27.156.90:8000/api';
 
 // TYPES
 interface User { id: number; name: string; no_tentera: string; }
@@ -31,7 +32,7 @@ interface Passenger { name: string; army_number: string; }
 interface Coords { latitude: number; longitude: number; }
 interface SearchResult { display_name: string; lat: string; lon: string; }
 
-// --- CUSTOM DROPDOWN (Updated with 'disabled' prop) ---
+// --- CUSTOM DROPDOWN ---
 const CustomDropdown = ({ label, data, onSelect, placeholder, selectedVal, disabled }: any) => {
     const [visible, setVisible] = useState(false);
     return (
@@ -72,22 +73,34 @@ const CustomDropdown = ({ label, data, onSelect, placeholder, selectedVal, disab
     );
 };
 
-// --- SEARCH COMPONENT (Updated with 'disabled' prop) ---
+// --- SEARCH COMPONENT (With Debounce & Headers) ---
 const NominatimSearch = ({ label, placeholder, onSelect, defaultValue, disabled }: any) => {
     const [query, setQuery] = useState(defaultValue || '');
     const [results, setResults] = useState<SearchResult[]>([]);
     const [searching, setSearching] = useState(false);
     const [showList, setShowList] = useState(false);
 
-    // Update query if defaultValue changes (for view mode)
     useEffect(() => { if (defaultValue) setQuery(defaultValue); }, [defaultValue]);
 
-    const searchLocation = async (text: string) => {
-        setQuery(text);
-        if (text.length < 3) { setResults([]); return; }
+    // DEBOUNCE LOGIC
+    useEffect(() => {
+        if (disabled || query.length < 3 || query === defaultValue) return;
+        const delayDebounceFn = setTimeout(() => {
+            performSearch(query);
+        }, 1000);
+        return () => clearTimeout(delayDebounceFn);
+    }, [query]);
+
+    const performSearch = async (text: string) => {
         setSearching(true);
         try {
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text)}&addressdetails=1&limit=5`, { headers: { 'User-Agent': 'FMSMobileApp/1.0' } });
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text)}&addressdetails=1&limit=5&countrycodes=my`, {
+                headers: {
+                    'User-Agent': 'FMSMobileApp/1.0',
+                    'Referer': 'https://github.com/my-app'
+                }
+            });
+            if (!res.ok) throw new Error('Network request failed');
             const data = await res.json();
             setResults(data);
             setShowList(true);
@@ -102,10 +115,10 @@ const NominatimSearch = ({ label, placeholder, onSelect, defaultValue, disabled 
                 <TextInput
                     style={[styles.textInput, disabled && { color: '#64748b' }]}
                     value={query}
-                    onChangeText={searchLocation}
+                    onChangeText={(text) => { setQuery(text); if (text.length < 3) setShowList(false); }}
                     placeholder={placeholder}
                     placeholderTextColor="#94a3b8"
-                    editable={!disabled} // DISABLE EDITING
+                    editable={!disabled}
                 />
                 {searching && <ActivityIndicator size="small" color="#2563eb" />}
             </View>
@@ -132,7 +145,6 @@ export default function CreateTaskScreen() {
     const colorScheme = useColorScheme();
     const isDarkMode = colorScheme === 'dark';
 
-    // MODE CHECK: If 'taskId' exists, we are in VIEW MODE
     const taskId = params.taskId;
     const isReadOnly = !!taskId;
 
@@ -169,8 +181,49 @@ export default function CreateTaskScreen() {
         fetchFormData();
         if (isReadOnly) {
             fetchTaskDetails(taskId as string);
+        } else {
+            getUserLocation();
         }
     }, []);
+
+    const getUserLocation = async () => {
+        try {
+            let { status } = await Location.requestForegroundPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert('Permission denied', 'Allow location access to set start point automatically.');
+                return;
+            }
+
+            let location = await Location.getCurrentPositionAsync({});
+            const { latitude, longitude } = location.coords;
+
+            setFromCoords({ latitude, longitude });
+
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`, {
+                headers: { 'User-Agent': 'FMSMobileApp/1.0' }
+            });
+            if (!res.ok) throw new Error('Reverse geocode failed');
+
+            const data = await res.json();
+            if (data && data.display_name) {
+                setFromText(data.display_name);
+            } else {
+                setFromText(`${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+            }
+
+            mapRef.current?.animateToRegion({
+                latitude,
+                longitude,
+                latitudeDelta: 0.05,
+                longitudeDelta: 0.05,
+            });
+
+        } catch (error) {
+            console.log("Error getting location:", error);
+            // Fallback so it doesn't crash
+            if (fromCoords) setFromText("Current Location");
+        }
+    };
 
     const fetchFormData = async () => {
         try {
@@ -191,7 +244,6 @@ export default function CreateTaskScreen() {
             const json = await response.json();
             if (json.status === 'success') {
                 const data = json.data;
-                // POPULATE FIELDS
                 setSelectedDriver({ id: data.driver.id, name: data.driver.name, no_tentera: data.driver.no_tentera });
                 if (data.driver2) setSelectedDriver2({ id: data.driver2.id, name: data.driver2.name, no_tentera: '' });
                 setSelectedVehicle({ asset_id: data.vehicle.asset_id, variant_id: 0, registration_number: data.vehicle.registration_number, jenis_kenderaan: data.vehicle.jenis_kenderaan });
@@ -202,7 +254,6 @@ export default function CreateTaskScreen() {
                 setTaskDetails(data.description);
                 setPassengerList(data.passengers);
 
-                // MAP
                 if (data.locations) {
                     setFromText(data.locations.start_location);
                     setToText(data.locations.end_location);
@@ -222,7 +273,6 @@ export default function CreateTaskScreen() {
         if (fromCoords && toCoords) {
             fetchRoute();
             if (mapRef.current) {
-                // Small timeout to ensure map is ready
                 setTimeout(() => {
                     mapRef.current?.fitToCoordinates([fromCoords, toCoords], {
                         edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
@@ -236,7 +286,7 @@ export default function CreateTaskScreen() {
     const fetchRoute = async () => {
         if (!fromCoords || !toCoords) return;
         try {
-            const url = `http://router.project-osrm.org/route/v1/driving/${fromCoords.longitude},${fromCoords.latitude};${toCoords.longitude},${toCoords.latitude}?overview=full&geometries=polyline`;
+            const url = `https://router.project-osrm.org/route/v1/driving/${fromCoords.longitude},${fromCoords.latitude};${toCoords.longitude},${toCoords.latitude}?overview=full&geometries=polyline`;
             const res = await fetch(url);
             const json = await res.json();
             if (json.routes && json.routes.length > 0) {
@@ -247,9 +297,62 @@ export default function CreateTaskScreen() {
         } catch (err) { console.log("Routing Error", err); }
     };
 
+    // --- FULLY IMPLEMENTED SUBMIT LOGIC (FIXED KEYS) ---
     const handleSubmit = async () => {
-        // ... (Submit logic same as before) ...
-        // You can keep this function, it won't be called in read-only mode
+        // 1. Validation
+        if (!selectedDriver) { Alert.alert('Ralat', 'Sila pilih pemandu.'); return; }
+        if (!selectedVehicle) { Alert.alert('Ralat', 'Sila pilih kenderaan.'); return; }
+        if (!taskType) { Alert.alert('Ralat', 'Sila pilih jenis tugas.'); return; }
+        if (!fromCoords || !toCoords) { Alert.alert('Ralat', 'Sila tetapkan lokasi mula dan tamat.'); return; }
+
+        setSubmitting(true);
+
+        // 2. Prepare Payload
+        // I have matched these keys EXACTLY to your TaskController.php validation rules
+        const payload = {
+            asset_id: selectedVehicle.asset_id,              // WAS 'vehicle_id', FIXED to 'asset_id'
+            driver_id: selectedDriver.id,
+            additional_driver_id: selectedDriver2 ? selectedDriver2.id : null, // WAS 'driver2_id', FIXED to 'additional_driver_id'
+            task_type: taskType,
+            date: taskDate,
+            time: taskTime,
+            description: taskDetails,
+            location_start: fromText,                        // Matches 'location_start' in controller
+            location_end: toText,                            // Matches 'location_end' in controller
+            start_lat: fromCoords.latitude,
+            start_lng: fromCoords.longitude,
+            end_lat: toCoords.latitude,
+            end_lng: toCoords.longitude,
+            passengers: passengerList
+        };
+
+        try {
+            // 3. Send Request
+            const response = await fetch(`${API_URL}/create-task`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify(payload),
+            });
+
+            const json = await response.json();
+
+            if (response.ok && json.status === 'success') {
+                Alert.alert("Berjaya", "Penugasan berjaya dicipta!", [
+                    { text: "OK", onPress: () => router.back() }
+                ]);
+            } else {
+                // If it fails, show the exact message from the backend
+                Alert.alert("Ralat", json.message || "Gagal mencipta penugasan.");
+            }
+        } catch (error) {
+            console.log("Submit Error:", error);
+            Alert.alert("Ralat Rangkaian", "Sila cuba lagi.");
+        } finally {
+            setSubmitting(false);
+        }
     };
 
     if (loading || fetchingDetails) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color="#2563eb" /></View>;
@@ -266,7 +369,7 @@ export default function CreateTaskScreen() {
                     <CustomDropdown
                         label="Nama Pemandu" placeholder="Pilih" data={drivers}
                         selectedVal={selectedDriver?.name} onSelect={setSelectedDriver}
-                        disabled={isReadOnly} // GREYED OUT
+                        disabled={isReadOnly}
                     />
                     <View style={styles.inputWrapper}>
                         <Text style={styles.label}>No. Tentera</Text>
@@ -274,14 +377,6 @@ export default function CreateTaskScreen() {
                             <Text style={[styles.inputText, { color: '#64748b' }]}>{selectedDriver?.no_tentera || '-'}</Text>
                         </View>
                     </View>
-                    {/* Only show Driver 2 if selected or if not read only */}
-                    {/* {(!isReadOnly || selectedDriver2) && (
-                        <CustomDropdown
-                            label="Pemandu Tambahan" placeholder="Tiada" data={drivers}
-                            selectedVal={selectedDriver2?.name} onSelect={setSelectedDriver2}
-                            disabled={isReadOnly}
-                        />
-                    )} */}
                 </View>
 
                 {/* VEHICLE */}
@@ -328,16 +423,30 @@ export default function CreateTaskScreen() {
                     </View>
                 </View>
 
-                {/* MAP */}
+                {/* MAP INPUTS */}
                 <Text style={styles.sectionHeader}>LOKASI & PERGERAKAN</Text>
+
                 <NominatimSearch
-                    label="Lokasi Mula" placeholder="-" onSelect={() => { }}
-                    defaultValue={fromText} disabled={isReadOnly}
+                    label="Lokasi Mula"
+                    placeholder="Mengambil lokasi..."
+                    defaultValue={fromText}
+                    disabled={isReadOnly}
+                    onSelect={(name: string, lat: number, lon: number) => {
+                        setFromText(name);
+                        setFromCoords({ latitude: lat, longitude: lon });
+                    }}
                 />
+
                 <View style={{ marginTop: 10 }}>
                     <NominatimSearch
-                        label="Lokasi Tamat" placeholder="-" onSelect={() => { }}
-                        defaultValue={toText} disabled={isReadOnly}
+                        label="Lokasi Tamat"
+                        placeholder="Cari lokasi..."
+                        defaultValue={toText}
+                        disabled={isReadOnly}
+                        onSelect={(name: string, lat: number, lon: number) => {
+                            setToText(name);
+                            setToCoords({ latitude: lat, longitude: lon });
+                        }}
                     />
                 </View>
 
@@ -358,7 +467,6 @@ export default function CreateTaskScreen() {
                 {/* PASSENGERS */}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 15 }}>
                     <Text style={styles.sectionHeader}>MAKLUMAT PENUMPANG</Text>
-                    {/* Hide ADD Button if ReadOnly */}
                     {!isReadOnly && (
                         <TouchableOpacity onPress={() => setPassengerList([...passengerList, { name: '', army_number: '' }])}>
                             <Text style={{ color: '#2563eb', fontWeight: 'bold' }}>+ Add</Text>
@@ -369,7 +477,6 @@ export default function CreateTaskScreen() {
                 {passengerList.map((p, i) => (
                     <View key={i} style={styles.card}>
                         {isReadOnly ? (
-                            // View Mode: Simple Text
                             <View>
                                 <Text style={{ fontSize: 12, color: '#64748b' }}>Nama</Text>
                                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#1e293b', marginBottom: 5 }}>{p.name}</Text>
@@ -377,7 +484,6 @@ export default function CreateTaskScreen() {
                                 <Text style={{ fontSize: 14, fontWeight: '600', color: '#1e293b' }}>{p.army_number}</Text>
                             </View>
                         ) : (
-                            // Edit Mode: Dropdown
                             <CustomDropdown label={`Penumpang ${i + 1}`} data={allUsers} selectedVal={p.name} onSelect={(u: User) => {
                                 const list = [...passengerList]; list[i] = { name: u.name, army_number: u.no_tentera }; setPassengerList(list);
                             }} placeholder="Pilih Nama" />
@@ -385,7 +491,7 @@ export default function CreateTaskScreen() {
                     </View>
                 ))}
 
-                {/* SUBMIT BUTTON - HIDDEN IN VIEW MODE */}
+                {/* SUBMIT BUTTON */}
                 {!isReadOnly && (
                     <TouchableOpacity style={styles.submitBtn} onPress={handleSubmit} disabled={submitting}>
                         <LinearGradient colors={['#1e40af', '#3b82f6']} style={styles.gradientBtn}>
@@ -412,14 +518,12 @@ const styles = StyleSheet.create({
     dropdownBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0', paddingHorizontal: 10, height: 45 },
     inputText: { fontSize: 14, color: '#1e293b' },
     textInput: { flex: 1, fontSize: 14, color: '#1e293b', height: '100%' },
-    disabledInput: { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1' }, // GREYED OUT STYLE
-
+    disabledInput: { backgroundColor: '#f1f5f9', borderColor: '#cbd5e1' },
     searchResultsContainer: { position: 'absolute', top: 65, left: 0, right: 0, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#cbd5e1', shadowColor: '#000', elevation: 5, maxHeight: 150 },
     searchResultItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
     searchResultText: { fontSize: 13, color: '#334155' },
     mapContainer: { height: 250, borderRadius: 16, overflow: 'hidden', marginTop: 10, borderWidth: 1, borderColor: '#e2e8f0' },
     map: { width: '100%', height: '100%' },
-
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
     modalContainer: { backgroundColor: '#fff', borderRadius: 16, maxHeight: '70%' },
     modalHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 15, borderBottomWidth: 1, borderColor: '#f1f5f9' },

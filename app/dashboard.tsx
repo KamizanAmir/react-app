@@ -46,7 +46,7 @@ interface TaskItem {
 }
 
 // --- CONFIG ---
-const API_URL = 'http://192.168.49.90:8000/api';
+const API_URL = 'http://172.27.156.90:8000/api';
 
 export default function DashboardScreen() {
     const router = useRouter();

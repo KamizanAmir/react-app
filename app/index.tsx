@@ -48,7 +48,7 @@ export default function LoginScreen() {
 
   // YOUR API CONFIGURATION
   // Ensure your phone/emulator can reach this IP
-  const API_URL = 'http://192.168.49.90:8000/api/login';
+  const API_URL = 'http://172.27.156.90:8000/api/login';
 
   const handleLogin = async () => {
     // 1. Basic validation
@@ -124,7 +124,7 @@ export default function LoginScreen() {
               <Ionicons name="shield-checkmark-outline" size={40} color="#fff" />
             </View>
             <Text style={styles.appTitle}>FMS MOBILE</Text>
-            <Text style={styles.appSubtitle}>Fleet Movement System</Text>
+            <Text style={styles.appSubtitle}>Fleet Management System</Text>
           </View>
 
           {/* FORM CONTAINER */}
